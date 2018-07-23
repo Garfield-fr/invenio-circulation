@@ -10,7 +10,7 @@
 
 from copy import deepcopy
 
-from flask import Blueprint, current_app, request, url_for
+from flask import Blueprint, current_app, request, url_for, jsonify
 from invenio_db import db
 from invenio_records_rest.utils import obj_or_import_string
 from invenio_records_rest.views import \
@@ -22,6 +22,7 @@ from invenio_rest.views import create_api_errorhandler
 from invenio_circulation.errors import LoanActionError, \
     NoValidTransitionAvailable
 from invenio_circulation.proxies import current_circulation
+from invenio_circulation.api import is_item_available
 
 HTTP_CODES = {
     'method_not_allowed': 405,
@@ -57,15 +58,21 @@ def build_url_action_for_pid(pid, action):
     )
 
 
-def build_blueprint_with_loan_actions(app):
-    """."""
+def create_blueprint(app):
+    """Create blueprint."""
     blueprint = Blueprint(
         'invenio_circulation',
         __name__,
         url_prefix='',
     )
     create_error_handlers(blueprint)
+    blueprint = add_loan_actions(app, blueprint)
+    blueprint = add_item_available_action(blueprint)
+    return blueprint
 
+
+def add_loan_actions(app, blueprint):
+    """."""
     endpoints = app.config.get('CIRCULATION_REST_ENDPOINTS', [])
     transitions = app.config.get('CIRCULATION_LOAN_TRANSITIONS', [])
 
@@ -105,9 +112,9 @@ def build_blueprint_with_loan_actions(app):
 
         distinct_actions = extract_transitions_from_app(app)
         url = '{0}/<any({1}):action>'.format(
-                options['item_route'],
-                ','.join(distinct_actions),
-            )
+            options['item_route'],
+            ','.join(distinct_actions),
+        )
         blueprint.add_url_rule(
             url,
             view_func=loan_actions,
@@ -115,6 +122,20 @@ def build_blueprint_with_loan_actions(app):
         )
 
         return blueprint
+
+
+def add_item_available_action(blueprint):
+    serializers = {'application/json': lambda data: jsonify(data)}
+    item_available_action = ItemAvailable.as_view(
+        ItemAvailable.view_name,
+        serializers=serializers
+    )
+    blueprint.add_url_rule(
+        '/item/<pid(item_pid):pid_value>/available',
+        view_func=item_available_action,
+        methods=['GET']
+    )
+    return blueprint
 
 
 class LoanActionResource(ContentNegotiatedMethodView):
@@ -150,4 +171,25 @@ class LoanActionResource(ContentNegotiatedMethodView):
         return self.make_response(
             pid, record, HTTP_CODES['accepted'],
             links_factory=self.links_factory
+        )
+
+
+class ItemAvailable(ContentNegotiatedMethodView):
+    """."""
+
+    view_name = 'item_available_action'
+
+    def __init__(self, serializers, *args):
+        """Constructor."""
+        super(ItemAvailable, self).__init__(
+            serializers,
+            *args
+        )
+
+    def get(self, pid_value):
+        """."""
+        return self.make_response(
+            dict(
+                available=is_item_available(pid_value)
+            )
         )
